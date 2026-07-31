@@ -1,0 +1,257 @@
+name: Actualizar noticias diarias
+
+on:
+  schedule:
+    # 08:00 UTC = 10:00 en España en horario de verano (CEST).
+    # En horario de invierno (CET) esto equivale a las 09:00 en España.
+    - cron: '0 8 * * *'
+  workflow_dispatch: {}   # permite ejecutarlo manualmente desde la pestaña Actions
+
+permissions:
+  contents: write
+
+jobs:
+  update-news:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clonar repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Generar página con noticias del día
+        env:
+          GNEWS_API_KEY: ${{ secrets.GNEWS_API_KEY }}
+        run: node fetch-news.js
+
+      - name: Publicar cambios
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add index.html
+          git diff --quiet --cached || git commit -m "Actualización automática de noticias $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git push
+
+// fetch-news.js
+// Descarga titulares del día usando la API gratuita de GNews.io
+// y genera index.html a partir de template.html
+
+const fs = require('fs');
+
+const API_KEY = process.env.GNEWS_API_KEY;
+const LANG = 'es';
+const COUNTRY = 'es';
+const MAX_ARTICLES = 10;
+
+if (!API_KEY) {
+  console.error('ERROR: falta la variable de entorno GNEWS_API_KEY');
+  process.exit(1);
+}
+
+async function main() {
+  const url = `https://gnews.io/api/v4/top-headlines?lang=${LANG}&country=${COUNTRY}&max=${MAX_ARTICLES}&apikey=${API_KEY}`;
+
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`Error al llamar a GNews API: ${res.status} ${res.statusText}`);
+  }
+  const data = await res.json();
+  const articles = data.articles || [];
+
+  if (articles.length === 0) {
+    console.warn('No se recibieron artículos. Se mantiene el index.html anterior.');
+    return;
+  }
+
+  const cardsHtml = articles.map(article => {
+    const title = escapeHtml(article.title || 'Sin título');
+    const description = escapeHtml(article.description || '');
+    const sourceName = escapeHtml(article.source?.name || 'Fuente desconocida');
+    const publishedAt = article.publishedAt
+      ? new Date(article.publishedAt).toLocaleString('es-ES', { dateStyle: 'medium', timeStyle: 'short' })
+      : '';
+    const image = article.image
+      ? `<img src="${article.image}" alt="${title}" loading="lazy">`
+      : '';
+
+    return `
+  <article class="news-card">
+    ${image}
+    <h2>${title}</h2>
+    <div class="meta">${sourceName} · ${publishedAt}</div>
+    <p>${description}</p>
+    <a href="${article.url}" target="_blank" rel="noopener noreferrer">Leer noticia completa &rarr;</a>
+  </article>`;
+  }).join('\n');
+
+  const template = fs.readFileSync('template.html', 'utf8');
+  const updatedDate = new Date().toLocaleString('es-ES', {
+    dateStyle: 'full',
+    timeStyle: 'short',
+    timeZone: 'Europe/Madrid'
+  });
+
+  const finalHtml = template
+    .replace('{{NEWS_CONTENT}}', cardsHtml)
+    .replace('{{UPDATED_DATE}}', updatedDate);
+
+  fs.writeFileSync('index.html', finalHtml, 'utf8');
+  console.log(`index.html generado con ${articles.length} noticias.`);
+}
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+main().catch(err => {
+  console.error(err);
+  process.exit(1);
+});
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Noticias del Día</title>
+
+<!--
+  ============================================================
+  Cuando Google AdSense apruebe tu cuenta, pega aquí el script
+  que te den, sustituyendo ca-pub-XXXXXXXXXXXXXXXX por tu ID:
+
+  <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-XXXXXXXXXXXXXXXX"
+   crossorigin="anonymous"></script>
+  ============================================================
+-->
+
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f5f6fa;
+    color: #2d2d2d;
+    line-height: 1.6;
+  }
+  header {
+    background: #1a1a2e;
+    color: #fff;
+    padding: 25px 20px;
+    text-align: center;
+  }
+  header p { opacity: 0.8; font-size: 14px; margin-top: 6px; }
+  .container { max-width: 900px; margin: 0 auto; padding: 20px; }
+  .ad-slot {
+    background: #e8e8e8;
+    border: 2px dashed #aaa;
+    text-align: center;
+    padding: 25px 10px;
+    margin: 20px 0;
+    color: #777;
+    font-size: 13px;
+    border-radius: 8px;
+  }
+  .news-card {
+    background: #fff;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+    margin-bottom: 18px;
+  }
+  .news-card img {
+    width: 100%; max-height: 260px; object-fit: cover;
+    border-radius: 6px; margin-bottom: 12px;
+  }
+  .news-card h2 { font-size: 19px; color: #1a1a2e; margin-bottom: 8px; }
+  .news-card .meta { font-size: 12px; color: #999; margin-bottom: 10px; }
+  .news-card p { font-size: 14px; margin-bottom: 10px; }
+  .news-card a {
+    display: inline-block; font-size: 13px; font-weight: 600;
+    color: #2454ff; text-decoration: none;
+  }
+  footer { text-align: center; padding: 20px; color: #999; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>📰 Noticias del Día</h1>
+  <p>Última actualización: {{UPDATED_DATE}}</p>
+</header>
+
+<div class="container">
+
+  <div class="ad-slot">[ Bloque de anuncio AdSense #1 ]</div>
+
+  {{NEWS_CONTENT}}
+
+  <div class="ad-slot">[ Bloque de anuncio AdSense #2 ]</div>
+
+</div>
+
+<footer>
+  <p>&copy; 2026 Noticias del Día. Contenido agregado de fuentes públicas, todos los derechos de las noticias pertenecen a sus autores originales.</p>
+</footer>
+
+</body>
+</html>
+
+# Cómo publicar esta web (todo desde el navegador, sin instalar nada)
+
+## 1. Consigue tu clave gratuita de noticias
+1. Entra en https://gnews.io y crea una cuenta gratis.
+2. Copia tu **API Key** desde tu panel (plan gratuito: 100 peticiones/día, más que suficiente para 1 actualización diaria).
+
+## 2. Crea tu repositorio en GitHub
+1. Entra en https://github.com y crea una cuenta gratis (si no tienes).
+2. Pulsa "New repository". Ponle un nombre, por ejemplo `mis-noticias`. Marca que sea **Public**.
+3. Sube estos 4 archivos/carpetas usando el botón **"Add file" > "Upload files"** (arrastrando desde tu ordenador, sin usar terminal ni Git):
+   - `template.html`
+   - `fetch-news.js`
+   - `.github/workflows/update-news.yml`
+   - `README.md` (opcional)
+
+   Importante: la carpeta `.github/workflows/` debe respetarse tal cual (GitHub la crea sola si arrastras el archivo con esa ruta, o puedes crear los archivos directamente en la web de GitHub con "Create new file" y escribir la ruta completa `.github/workflows/update-news.yml`).
+
+## 3. Guarda tu clave de forma segura
+1. En tu repositorio: **Settings > Secrets and variables > Actions > New repository secret**.
+2. Nombre: `GNEWS_API_KEY`
+3. Valor: pega tu clave de GNews.
+4. Guarda.
+
+## 4. Da permisos de escritura a las Actions
+1. **Settings > Actions > General > Workflow permissions**.
+2. Selecciona **"Read and write permissions"** y guarda.
+   (Esto permite que el robot pueda subir el index.html actualizado cada día.)
+
+## 5. Ejecuta el workflow por primera vez
+1. Ve a la pestaña **Actions** de tu repositorio.
+2. Selecciona "Actualizar noticias diarias" > **Run workflow**.
+3. Espera 1-2 minutos: se generará tu primer `index.html` con noticias reales.
+
+A partir de aquí, se ejecutará solo cada día a las 10:00 (hora de España, con la salvedad del cambio de horario invierno/verano indicada en el propio workflow).
+
+## 6. Publica la web con GitHub Pages (tu dominio gratis)
+1. **Settings > Pages**.
+2. En "Source" elige la rama `main` y carpeta `/root`.
+3. Guarda. En unos minutos tu web estará en:
+   `https://TU-USUARIO.github.io/mis-noticias/`
+
+Esa URL es 100% gratis y permanente.
+
+## 7. (Opcional) Dominio propio tipo .com
+No existen ya dominios .com gratis reales, pero si en el futuro quieres uno propio
+(ej. `misnoticias.com`), puedes comprarlo barato (~1-12€/año en Namecheap o Porkbun)
+y apuntarlo a tu GitHub Pages solo configurando un DNS desde su web, sin instalar nada tampoco.
+
+## 8. Anuncios de Google AdSense
+Cuando tu cuenta de AdSense esté aprobada, sustituye los bloques
+`[ Bloque de anuncio AdSense ]` en `template.html` por el código real que te dé Google,
+sube el cambio a GitHub, y aparecerán en la siguiente actualización automática.
